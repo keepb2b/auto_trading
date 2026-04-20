@@ -109,8 +109,8 @@ def upload_companies_csv(
     normalize_status: Callable = normalize_status_jp,
 ) -> str:
     """
-    POST each CSV row to {SUPABASE_URL}/rest/v1/companies.
-    Rows without website are skipped; duplicate website returns 409 → skipped.
+    POST each CSV row to {SUPABASE_URL}/rest/v1/companies with upsert semantics.
+    Rows without website are skipped; existing rows (same website) are updated.
     """
     if not os.path.isfile(csv_path):
         return "CSV が見つかりません。アップロードをスキップしました。"
@@ -175,9 +175,9 @@ def upload_companies_csv(
             + "\n自動アップロードをスキップしました（CSV のみ保存済み）。"
         )
 
-    added = skipped = 0
+    synced = skipped = failed = 0
     err_sample = None
-    endpoint = f"{base.rstrip('/')}/rest/v1/companies"
+    endpoint = f"{base.rstrip('/')}/rest/v1/companies?on_conflict=website"
     try:
         with open(csv_path, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
@@ -211,34 +211,33 @@ def upload_companies_csv(
                         "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
                         "Accept": "application/json",
-                        "Prefer": "return=minimal",
+                        # Upsert by website so a re-scrape updates existing rows instead of 409 skip.
+                        "Prefer": "return=minimal,resolution=merge-duplicates",
                     },
                 )
                 try:
                     with urllib.request.urlopen(req, timeout=90) as resp:
-                        if resp.status in (200, 201):
-                            added += 1
+                        if resp.status in (200, 201, 204):
+                            synced += 1
                         else:
                             skipped += 1
                 except urllib.error.HTTPError as e:
-                    if e.code == 409:
-                        skipped += 1
-                    else:
-                        skipped += 1
-                        if err_sample is None:
-                            err_sample = (
-                                f"HTTP {e.code} "
-                                f"{e.read()[:200].decode('utf-8', errors='replace')}"
-                            )
+                    failed += 1
+                    if err_sample is None:
+                        err_sample = (
+                            f"HTTP {e.code} "
+                            f"{e.read()[:200].decode('utf-8', errors='replace')}"
+                        )
     except Exception as e:
         return f"Supabase への送信中にエラー: {e}"
 
     msg = (
-        f"Supabase に反映しました。追加相当 {added} 件、スキップ {skipped} 件"
-        "（重複 website など）。"
+        f"Supabase に反映しました。同期 {synced} 件、スキップ {skipped} 件、失敗 {failed} 件。"
     )
     if err_sample:
         msg += f"\n※一部エラー例: {err_sample}"
-    if added == 0 and skipped == 0:
+    if synced == 0 and skipped == 0 and failed == 0:
         msg = "CSV に有効な行がありませんでした（website 列を確認してください）。"
+    elif synced == 0 and failed > 0:
+        msg += "\n※同期できた行が 0 件です。.env の SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY と companies テーブル定義を確認してください。"
     return msg
