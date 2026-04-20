@@ -1,0 +1,10 @@
+.venv/
+build/
+dist/
+dist_ready/
+__pycache__/
+
+# Secrets — copy .env.example to .env locally; never commit .env
+.env
+.env.local
+.env.*.local
